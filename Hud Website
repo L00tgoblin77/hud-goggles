@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="HUD">
+<meta name="theme-color" content="#000000">
+<title>Goggles HUD</title>
+<style>
+/* Layout: one column of seven-segment tiles (speed, heading, altitude, battery), controls underneath. */
+:root{
+  --bg:#000; --panel:#0b0b0c; --edge:#2a2a2d; --fg:#fff; --dim:#8b8b92; --ghost:.07;
+  --ok:#5ad17a; --warn:#e8b04a; --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  --sans:-apple-system,"Helvetica Neue",Arial,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans)}
+body{padding-block:max(14px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-bottom));
+  padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right));
+  min-height:100vh}
+main{max-width:520px;margin:0 auto;display:grid;gap:12px}
+header{display:flex;justify-content:space-between;align-items:center;gap:8px}
+h1{font-size:15px;letter-spacing:.14em;text-transform:uppercase;margin:0;font-weight:600}
+.pill{font:12px var(--mono);color:var(--dim);border:1px solid var(--edge);border-radius:99px;padding:4px 10px}
+.pill.on{color:var(--ok);border-color:var(--ok)}
+.tile{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:14px 16px 12px;
+  box-shadow:inset 0 0 0 3px #000, inset 0 0 0 4px #17171a}
+.tile .lab{font:11px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+  display:flex;justify-content:space-between}
+.read{display:flex;align-items:flex-end;gap:10px;margin-top:8px}
+.digits{display:flex;gap:calc(var(--h)*.09);height:var(--h)}
+.digits svg{height:100%;width:auto;display:block}
+.unit{font:600 14px var(--mono);color:var(--dim);padding-bottom:4px}
+.big{--h:96px}.mid{--h:60px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.row .tile{min-width:0}
+.card{font:15px var(--mono);letter-spacing:.04em;margin-left:auto;padding-bottom:2px}
+.ctl{display:grid;gap:10px;margin-top:4px}
+.btns{display:flex;flex-wrap:wrap;gap:8px}
+button{font:600 14px var(--sans);color:var(--fg);background:#17171a;border:1px solid var(--edge);
+  border-radius:10px;padding:11px 14px;flex:1 1 140px;cursor:pointer}
+button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+button.primary{background:var(--fg);color:#000;border-color:var(--fg)}
+button[aria-pressed="true"]{border-color:var(--ok);color:var(--ok)}
+.note{font-size:12.5px;line-height:1.5;color:var(--dim);margin:0}
+.note b{color:var(--fg);font-weight:600}
+#msg{min-height:1.4em}
+@media (max-width:380px){.big{--h:80px}.mid{--h:48px}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Goggles HUD</h1>
+    <span class="pill" id="linkPill">goggles: off</span>
+  </header>
+
+  <section class="tile" aria-label="Speed">
+    <div class="lab"><span>Speed</span><span id="gpsState">gps idle</span></div>
+    <div class="read"><div class="digits big" id="speed"></div><span class="unit" id="speedUnit">MPH</span></div>
+  </section>
+
+  <div class="row">
+    <section class="tile" aria-label="Heading">
+      <div class="lab"><span>Heading</span></div>
+      <div class="read"><div class="digits mid" id="heading"></div><span class="unit">°</span><span class="card" id="card">--</span></div>
+    </section>
+    <section class="tile" aria-label="Altitude">
+      <div class="lab"><span>Altitude</span></div>
+      <div class="read"><div class="digits mid" id="alt"></div><span class="unit" id="altUnit">FT</span></div>
+    </section>
+  </div>
+
+  <div class="row">
+    <section class="tile" aria-label="Phone battery">
+      <div class="lab"><span>Phone batt</span></div>
+      <div class="read"><div class="digits mid" id="pbat"></div><span class="unit">%</span></div>
+    </section>
+    <section class="tile" aria-label="Goggles battery">
+      <div class="lab"><span>Goggles batt</span></div>
+      <div class="read"><div class="digits mid" id="gbat"></div><span class="unit">%</span></div>
+    </section>
+  </div>
+
+  <div class="ctl">
+    <div class="btns">
+      <button class="primary" id="startBtn">Start GPS + compass</button>
+      <button id="bleBtn">Connect goggles</button>
+    </div>
+    <div class="btns">
+      <button id="demoBtn" aria-pressed="false">Demo mode</button>
+      <button id="unitBtn">Switch to km/h, m</button>
+    </div>
+    <p class="note" id="msg" role="status"></p>
+    <p class="note"><b>iPhone note:</b> Safari can't use Bluetooth. To link the goggles, open this page in the free <b>Bluefy</b> browser. GPS and compass work in Safari and when added to the Home Screen.</p>
+  </div>
+</main>
+
+<script>
+(function(){
+"use strict";
+var SERVICE="6e400001-b5a3-f393-e0a9-e50e24dcca9e",
+    SENSOR ="6e400002-b5a3-f393-e0a9-e50e24dcca9e",
+    BATT   ="6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+/* ---------- seven-segment renderer ---------- */
+var SEGS={a:[9,0,42,9],b:[51,8,9,36],c:[51,56,9,36],d:[9,91,42,9],e:[0,56,9,36],f:[0,8,9,36],g:[9,45.5,42,9]};
+var MAP={"0":"abcdef","1":"bc","2":"abdeg","3":"abcdg","4":"bcfg","5":"acdfg","6":"acdefg","7":"abc","8":"abcdefg","9":"abcdfg","-":"g"," ":""};
+function digitSVG(ch){
+  var on=MAP[ch]||"",s='<svg viewBox="0 0 60 100" aria-hidden="true">';
+  for(var k in SEGS){var r=SEGS[k];
+    s+='<rect x="'+r[0]+'" y="'+r[1]+'" width="'+r[2]+'" height="'+r[3]+'" rx="2" fill="#fff" opacity="'+(on.indexOf(k)>=0?1:.07)+'"/>';}
+  return s+'</svg>';
+}
+function show(id,val,n){
+  var el=document.getElementById(id),str;
+  if(val==null||isNaN(val)){str=new Array(n+1).join("-");}
+  else{str=String(Math.max(0,Math.round(val)));while(str.length<n)str=" "+str;if(str.length>n)str=str.slice(-n);}
+  var key=str;if(el.dataset.v===key)return;el.dataset.v=key;
+  el.innerHTML=str.split("").map(digitSVG).join("");
+  el.setAttribute("aria-label",str.trim());
+}
+
+/* ---------- state ---------- */
+var S={speed:null,alt:null,head:null,pbat:null,gbat:null,metric:false,demo:false,gpsHead:null,compass:null,t0:0};
+var $=function(i){return document.getElementById(i)};
+function msg(t){$("msg").textContent=t||""}
+var CARD=["N","NE","E","SE","S","SW","W","NW"];
+
+function render(){
+  var sp=S.speed==null?null:(S.metric?S.speed*3.6:S.speed*2.23694);
+  var al=S.alt==null?null:(S.metric?S.alt:S.alt*3.28084);
+  show("speed",sp,3);show("alt",al,5);show("heading",S.head,3);
+  show("pbat",S.pbat,3);show("gbat",S.gbat,3);
+  $("card").textContent=S.head==null?"--":CARD[Math.round(S.head/45)%8];
+  $("speedUnit").textContent=S.metric?"KM/H":"MPH";
+  $("altUnit").textContent=S.metric?"M":"FT";
+  $("unitBtn").textContent=S.metric?"Switch to mph, ft":"Switch to km/h, m";
+}
+
+/* ---------- GPS + compass ---------- */
+var watchId=null;
+function pickHeading(){
+  if(S.compass!=null)S.head=S.compass;
+  else if(S.gpsHead!=null)S.head=S.gpsHead;
+}
+function startSensors(){
+  if(!("geolocation" in navigator)){msg("This browser has no GPS access.");return;}
+  S.demo=false;$("demoBtn").setAttribute("aria-pressed","false");
+  if(watchId!=null)navigator.geolocation.clearWatch(watchId);
+  $("gpsState").textContent="gps searching…";
+  watchId=navigator.geolocation.watchPosition(function(p){
+    var c=p.coords;
+    S.speed=(c.speed!=null&&c.speed>=0)?c.speed:0;
+    if(c.altitude!=null)S.alt=c.altitude;
+    if(c.heading!=null&&!isNaN(c.heading)&&S.speed>1)S.gpsHead=c.heading;
+    pickHeading();
+    $("gpsState").textContent="gps ±"+Math.round(c.accuracy)+" m";
+    render();
+  },function(e){
+    $("gpsState").textContent="gps off";
+    msg(e.code===1?"Location is blocked. Allow it in Settings > Safari > Location, then try again.":"Couldn't get a GPS fix. Try again outside.");
+  },{enableHighAccuracy:true,maximumAge:0,timeout:20000});
+
+  var DO=window.DeviceOrientationEvent;
+  function listen(){
+    window.addEventListener("deviceorientation",function(e){
+      var h=null;
+      if(typeof e.webkitCompassHeading==="number")h=e.webkitCompassHeading;
+      else if(e.absolute&&e.alpha!=null)h=(360-e.alpha)%360;
+      if(h!=null){S.compass=h;pickHeading();render();}
+    },true);
+  }
+  if(DO&&typeof DO.requestPermission==="function"){
+    DO.requestPermission().then(function(r){if(r==="granted")listen();else msg("Compass was denied. Heading will come from GPS while you move.");})
+      .catch(function(){msg("Compass unavailable. Heading will come from GPS while you move.");});
+  }else if(DO){listen();}
+  try{if(navigator.wakeLock)navigator.wakeLock.request("screen").catch(function(){});}catch(e){}
+  msg("");
+}
+
+/* ---------- phone battery (Android / desktop Chrome only) ---------- */
+if(navigator.getBattery){
+  navigator.getBattery().then(function(b){
+    function u(){S.pbat=b.level*100;render();}
+    u();b.addEventListener("levelchange",u);
+  }).catch(function(){});
+}
+
+/* ---------- Bluetooth to the ESP32 ---------- */
+var sensorChar=null,device=null,sendTimer=null;
+function packet(){
+  var b=new ArrayBuffer(12),v=new DataView(b);
+  v.setFloat32(0,S.speed||0,true);
+  v.setFloat32(4,S.alt||0,true);
+  v.setFloat32(8,S.head||0,true);
+  return b;
+}
+function setLink(on){
+  $("linkPill").textContent=on?"goggles: linked":"goggles: off";
+  $("linkPill").className="pill"+(on?" on":"");
+  $("bleBtn").textContent=on?"Disconnect goggles":"Connect goggles";
+  if(!on){S.gbat=null;render();}
+}
+async function connect(){
+  if(device&&device.gatt.connected){device.gatt.disconnect();return;}
+  if(!navigator.bluetooth){
+    msg("This browser can't do Bluetooth. Open this page in Bluefy (free on the App Store) or Chrome on Android.");
+    return;
+  }
+  try{
+    msg("Pick your goggles from the list…");
+    device=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE]}]});
+    device.addEventListener("gattserverdisconnected",function(){
+      clearInterval(sendTimer);sensorChar=null;setLink(false);msg("Goggles disconnected.");
+    });
+    var server=await device.gatt.connect();
+    var svc=await server.getPrimaryService(SERVICE);
+    sensorChar=await svc.getCharacteristic(SENSOR);
+    try{
+      var bc=await svc.getCharacteristic(BATT);
+      await bc.startNotifications();
+      bc.addEventListener("characteristicvaluechanged",function(e){S.gbat=e.target.value.getUint8(0);render();});
+      var first=await bc.readValue();S.gbat=first.getUint8(0);render();
+    }catch(e){}
+    setLink(true);msg("");
+    clearInterval(sendTimer);
+    sendTimer=setInterval(async function(){
+      if(!sensorChar)return;
+      try{
+        if(sensorChar.writeValueWithoutResponse)await sensorChar.writeValueWithoutResponse(packet());
+        else await sensorChar.writeValue(packet());
+      }catch(e){}
+    },250);
+  }catch(e){
+    setLink(false);
+    msg(e&&e.name==="NotFoundError"?"No goggles chosen.":"Couldn't connect: "+(e&&e.message?e.message:e));
+  }
+}
+
+/* ---------- demo mode ---------- */
+var demoTimer=null;
+function demoTick(){
+  var t=(Date.now()-S.t0)/1000;
+  S.speed=(18+16*Math.sin(t/6))*0.44704;
+  S.alt=2310*0.3048+60*Math.sin(t/17);
+  S.compass=(t*9)%360;S.head=S.compass;
+  S.pbat=82;if(!(device&&device.gatt&&device.gatt.connected))S.gbat=64;
+  render();
+}
+function setDemo(on){
+  S.demo=on;$("demoBtn").setAttribute("aria-pressed",String(on));
+  clearInterval(demoTimer);
+  if(on){
+    if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null;$("gpsState").textContent="gps idle";}
+    S.t0=Date.now();demoTick();demoTimer=setInterval(demoTick,200);
+    msg("Demo mode: made-up numbers. Connect the goggles to send them to the display.");
+  }else{S.speed=S.alt=S.head=S.compass=null;if(!S.pbat)S.pbat=null;S.gbat=null;render();msg("");}
+}
+
+/* ---------- wiring ---------- */
+$("startBtn").addEventListener("click",startSensors);
+$("bleBtn").addEventListener("click",connect);
+$("demoBtn").addEventListener("click",function(){setDemo(!S.demo);});
+$("unitBtn").addEventListener("click",function(){S.metric=!S.metric;try{localStorage.setItem("hudMetric",S.metric?"1":"0");}catch(e){}render();});
+try{S.metric=localStorage.getItem("hudMetric")==="1";}catch(e){}
+render();
+})();
+</script>
+</body>
+</html>
